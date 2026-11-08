@@ -2281,6 +2281,349 @@ shownName = function()
 end
 
 --------------------------------------------------------------------
+-- WORLD: GRAPHICS (улучшение картинки: bloom, лучи, цветокоррекция, глубина резкости, отражения)
+-- "RTX" в Roblox - это набор пост-эффектов Lighting, настоящей трассировки лучей нет.
+--------------------------------------------------------------------
+local GFX_PRESETS = {
+	{name = "RTX", colors = {Color3.fromRGB(40, 70, 120), Color3.fromRGB(255, 190, 130)},
+		bloom = {0.55, 32, 0.85}, rays = {0.18, 0.75}, exposure = 0.1, softShadow = 0.15,
+		cc = {Brightness = 0.02, Contrast = 0.18, Saturation = 0.2, Tint = Color3.fromRGB(255, 248, 240)},
+		dof = {0.12, 150, 90}},
+	{name = "Cinematic", colors = {Color3.fromRGB(20, 40, 60), Color3.fromRGB(230, 150, 90)},
+		bloom = {0.4, 28, 0.9}, rays = {0.1, 0.6}, exposure = -0.1, softShadow = 0.25,
+		cc = {Brightness = -0.02, Contrast = 0.25, Saturation = -0.05, Tint = Color3.fromRGB(240, 246, 255)},
+		dof = {0.18, 100, 60}},
+	{name = "Vibrant", colors = {Color3.fromRGB(255, 80, 150), Color3.fromRGB(80, 220, 255)},
+		bloom = {0.45, 26, 0.9}, rays = {0.15, 0.7}, exposure = 0.05, softShadow = 0.15,
+		cc = {Brightness = 0, Contrast = 0.12, Saturation = 0.45, Tint = WHITE},
+		dof = {0.05, 150, 90}},
+	{name = "Realistic", colors = {Color3.fromRGB(120, 140, 120), Color3.fromRGB(210, 205, 190)},
+		bloom = {0.25, 20, 0.95}, rays = {0.08, 0.5}, exposure = 0, softShadow = 0.2,
+		cc = {Brightness = 0, Contrast = 0.1, Saturation = -0.08, Tint = Color3.fromRGB(255, 252, 246)},
+		dof = {0.1, 200, 120}},
+	{name = "Soft Glow", colors = {Color3.fromRGB(255, 200, 220), Color3.fromRGB(255, 245, 235)},
+		bloom = {1.0, 44, 0.7}, rays = {0.25, 0.9}, exposure = 0.15, softShadow = 0.3,
+		cc = {Brightness = 0.04, Contrast = 0.05, Saturation = 0.15, Tint = Color3.fromRGB(255, 238, 245)},
+		dof = {0.06, 150, 90}},
+}
+
+local gfx = {snap = nil, cc = nil, bloom = nil, rays = nil, dof = nil, motion = nil, tweens = {}, token = 0, lastLook = nil, mblur = 0}
+local GfxMod
+
+local function gfxCancel()
+	for _, t in ipairs(gfx.tweens) do
+		t:Cancel()
+	end
+	gfx.tweens = {}
+end
+
+local function gfxApply(smooth)
+	if not gfx.cc then
+		return
+	end
+	local p = GFX_PRESETS[GfxMod.v.Preset]
+	local I = GfxMod.v.Intensity
+	local lighting = {ExposureCompensation = p.exposure * I}
+	if GfxMod.v.Reflections then
+		lighting.EnvironmentSpecularScale = 1
+		lighting.EnvironmentDiffuseScale = 1
+	elseif gfx.snap then
+		lighting.EnvironmentSpecularScale = gfx.snap.EnvironmentSpecularScale
+		lighting.EnvironmentDiffuseScale = gfx.snap.EnvironmentDiffuseScale
+	end
+	if GfxMod.v["Soft Shadows"] then
+		lighting.ShadowSoftness = p.softShadow
+	elseif gfx.snap then
+		lighting.ShadowSoftness = gfx.snap.ShadowSoftness
+	end
+	local targets = {
+		{Lighting, lighting},
+		{gfx.bloom, {Intensity = p.bloom[1] * I, Size = p.bloom[2], Threshold = p.bloom[3]}},
+		{gfx.rays, {Intensity = p.rays[1] * I, Spread = p.rays[2]}},
+		{gfx.cc, {Brightness = p.cc.Brightness * I, Contrast = p.cc.Contrast * I, Saturation = p.cc.Saturation * I, TintColor = WHITE:Lerp(p.cc.Tint, I)}},
+		{gfx.dof, {FarIntensity = GfxMod.v["Depth of Field"] and p.dof[1] * I or 0, FocusDistance = p.dof[2], InFocusRadius = p.dof[3], NearIntensity = 0}},
+	}
+	gfxCancel()
+	for _, pair in ipairs(targets) do
+		if smooth then
+			local okT, t = pcall(function()
+				return TweenService:Create(pair[1], TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), pair[2])
+			end)
+			if okT and t then
+				t:Play()
+				table.insert(gfx.tweens, t)
+			end
+		else
+			for k, v in pairs(pair[2]) do
+				pcall(function()
+					pair[1][k] = v
+				end)
+			end
+		end
+	end
+end
+
+GfxMod = Module({
+	name = "Graphics",
+	key = Enum.KeyCode.I,
+	settings = {
+		{type = "gallery", name = "Preset", items = GFX_PRESETS, default = 1},
+		{type = "slider", name = "Intensity", min = 0, max = 1, step = 0.05, default = 0.8},
+		{type = "toggle", name = "Reflections", default = true},
+		{type = "toggle", name = "Soft Shadows", default = true},
+		{type = "toggle", name = "Depth of Field", default = false},
+		{type = "toggle", name = "Motion Blur", default = false},
+	},
+	onToggle = function(on)
+		gfx.token += 1
+		local my = gfx.token
+		if on then
+			gfx.snap = {}
+			for _, k in ipairs({"ExposureCompensation", "EnvironmentDiffuseScale", "EnvironmentSpecularScale", "ShadowSoftness"}) do
+				pcall(function()
+					gfx.snap[k] = Lighting[k]
+				end)
+			end
+			gfx.cc = new("ColorCorrectionEffect", {Name = "AreVisualsGfxCC"}, Lighting)
+			gfx.bloom = new("BloomEffect", {Name = "AreVisualsGfxBloom", Intensity = 0, Size = 24, Threshold = 1}, Lighting)
+			gfx.rays = new("SunRaysEffect", {Name = "AreVisualsGfxRays", Intensity = 0, Spread = 0.5}, Lighting)
+			gfx.dof = new("DepthOfFieldEffect", {Name = "AreVisualsGfxDoF", FarIntensity = 0, NearIntensity = 0, FocusDistance = 100, InFocusRadius = 50}, Lighting)
+			gfx.motion = new("BlurEffect", {Name = "AreVisualsGfxMotion", Size = 0}, Lighting)
+			gfx.mblur = 0
+			gfxApply(true)
+		else
+			gfxCancel()
+			local cc, bloom, rays, dof, motion = gfx.cc, gfx.bloom, gfx.rays, gfx.dof, gfx.motion
+			if cc then
+				local info = TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+				if gfx.snap then
+					local restore = {}
+					for k, v in pairs(gfx.snap) do
+						restore[k] = v
+					end
+					pcall(function()
+						TweenService:Create(Lighting, info, restore):Play()
+					end)
+				end
+				TweenService:Create(cc, info, {Brightness = 0, Contrast = 0, Saturation = 0, TintColor = WHITE}):Play()
+				TweenService:Create(bloom, info, {Intensity = 0}):Play()
+				TweenService:Create(rays, info, {Intensity = 0}):Play()
+				TweenService:Create(dof, info, {FarIntensity = 0}):Play()
+				motion.Size = 0
+				task.delay(1.3, function()
+					if gfx.token ~= my then
+						return
+					end
+					cc:Destroy()
+					bloom:Destroy()
+					rays:Destroy()
+					dof:Destroy()
+					motion:Destroy()
+					gfx.cc, gfx.bloom, gfx.rays, gfx.dof, gfx.motion = nil, nil, nil, nil, nil
+				end)
+			end
+		end
+	end,
+	onChange = function(name)
+		gfxApply(name ~= "Intensity")
+	end,
+})
+
+-- motion blur: размытие зависит от скорости поворота камеры
+RunService.RenderStepped:Connect(function(dt)
+	if not (GfxMod.enabled and gfx.motion) then
+		gfx.lastLook = nil
+		return
+	end
+	local cam = workspace.CurrentCamera
+	if not cam then
+		return
+	end
+	local look = cam.CFrame.LookVector
+	local target = 0
+	if GfxMod.v["Motion Blur"] and gfx.lastLook and dt > 0 then
+		local ang = math.acos(math.clamp(look:Dot(gfx.lastLook), -1, 1))
+		target = math.clamp(ang / dt * 2.5, 0, 12)
+	end
+	gfx.lastLook = look
+	gfx.mblur += (target - gfx.mblur) * (1 - math.exp(-dt * 12))
+	gfx.motion.Size = gfx.mblur
+end)
+
+--------------------------------------------------------------------
+-- WORLD: POTATO GRAPHICS (все материалы -> пластик)
+--------------------------------------------------------------------
+local potato = {orig = setmetatable({}, {__mode = "k"}), conn = nil, token = 0, shadowsWas = nil}
+local PotatoMod
+
+local function potatoIsMine(inst)
+	local a = inst.Parent
+	while a and a ~= workspace do
+		local n = a.Name
+		if n:sub(1, 10) == "AreVisuals" or n == "JumpCircle" or n == "JumpCircleText" then
+			return true
+		end
+		a = a.Parent
+	end
+	return false
+end
+
+local function potatoApply(d)
+	if not d:IsA("BasePart") or d:IsA("Terrain") then
+		return
+	end
+	if player.Character and d:IsDescendantOf(player.Character) then
+		return -- не трогаем свой персонаж (Self Chams)
+	end
+	if potatoIsMine(d) then
+		return
+	end
+	if potato.orig[d] == nil then
+		potato.orig[d] = {d.Material, d.MaterialVariant}
+	end
+	local m = PotatoMod.v.Smooth and Enum.Material.SmoothPlastic or Enum.Material.Plastic
+	if d.Material ~= m then
+		d.Material = m
+	end
+	if d.MaterialVariant ~= "" then
+		d.MaterialVariant = ""
+	end
+end
+
+local function potatoScanAll(my)
+	local n = 0
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if potato.token ~= my then
+			return
+		end
+		potatoApply(d)
+		n += 1
+		if n % 600 == 0 then
+			task.wait()
+		end
+	end
+end
+
+PotatoMod = Module({
+	name = "Potato Graphics",
+	settings = {
+		{type = "toggle", name = "Smooth", default = false},
+		{type = "toggle", name = "No Shadows", default = true},
+	},
+	onToggle = function(on)
+		potato.token += 1
+		local my = potato.token
+		if potato.conn then
+			potato.conn:Disconnect()
+			potato.conn = nil
+		end
+		if on then
+			potato.conn = workspace.DescendantAdded:Connect(function(d)
+				if PotatoMod.enabled then
+					potatoApply(d)
+				end
+			end)
+			if PotatoMod.v["No Shadows"] then
+				potato.shadowsWas = Lighting.GlobalShadows
+				Lighting.GlobalShadows = false
+			end
+			task.spawn(potatoScanAll, my)
+		else
+			if potato.shadowsWas ~= nil then
+				Lighting.GlobalShadows = potato.shadowsWas
+				potato.shadowsWas = nil
+			end
+			task.spawn(function()
+				local n = 0
+				for part, o in pairs(potato.orig) do
+					if potato.token ~= my then
+						return
+					end
+					if part.Parent then
+						part.Material = o[1]
+						part.MaterialVariant = o[2]
+					end
+					potato.orig[part] = nil
+					n += 1
+					if n % 600 == 0 then
+						task.wait()
+					end
+				end
+			end)
+		end
+	end,
+	onChange = function(name)
+		if not PotatoMod.enabled then
+			return
+		end
+		if name == "Smooth" then
+			potato.token += 1
+			task.spawn(potatoScanAll, potato.token)
+		elseif name == "No Shadows" then
+			if PotatoMod.v["No Shadows"] then
+				if potato.shadowsWas == nil then
+					potato.shadowsWas = Lighting.GlobalShadows
+				end
+				Lighting.GlobalShadows = false
+			elseif potato.shadowsWas ~= nil then
+				Lighting.GlobalShadows = potato.shadowsWas
+				potato.shadowsWas = nil
+			end
+		end
+	end,
+})
+
+--------------------------------------------------------------------
+-- SCREEN: DBD MOVEMENT (визуальный эффект камеры: плавное отставание + небольшой занос)
+--------------------------------------------------------------------
+local dbd = {off = Vector3.zero, vel = Vector3.zero, roll = 0, conn = nil}
+local DbdMod
+
+local function dbdStep(dt)
+	local cam = workspace.CurrentCamera
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not cam or not root then
+		return
+	end
+	dt = math.min(dt, 1 / 20)
+	local v = root.AssemblyLinearVelocity
+	local flat = Vector3.new(v.X, 0, v.Z)
+	local lagK, swayK = DbdMod.v.Lag, DbdMod.v.Sway
+	-- камера отстаёт от бега; пружина с недодемпфированием даёт лёгкий перелёт ("занос")
+	local target = -flat * (0.09 * lagK)
+	local stiff = 55
+	local damp = 2 * math.sqrt(stiff) * 0.55
+	local acc = (target - dbd.off) * stiff - dbd.vel * damp
+	dbd.vel += acc * dt
+	dbd.off += dbd.vel * dt
+	-- лёгкий крен по боковой скорости
+	local lat = flat:Dot(cam.CFrame.RightVector)
+	local targetRoll = math.clamp(-lat * 0.004 * swayK, -0.08, 0.08)
+	dbd.roll += (targetRoll - dbd.roll) * (1 - math.exp(-dt * 6))
+	cam.CFrame = (cam.CFrame + dbd.off) * CFrame.Angles(0, 0, dbd.roll)
+end
+
+DbdMod = Module({
+	name = "DBD Movement",
+	key = Enum.KeyCode.U,
+	settings = {
+		{type = "slider", name = "Lag", min = 0, max = 1, step = 0.05, default = 0.6},
+		{type = "slider", name = "Sway", min = 0, max = 1, step = 0.05, default = 0.5},
+	},
+	onToggle = function(on)
+		if dbd.conn then
+			dbd.conn:Disconnect()
+			dbd.conn = nil
+		end
+		if on then
+			dbd.off, dbd.vel, dbd.roll = Vector3.zero, Vector3.zero, 0
+			dbd.conn = RunService.RenderStepped:Connect(dbdStep)
+		end
+	end,
+})
+
+--------------------------------------------------------------------
 -- SETTINGS (настройка самого UI / watermark / keybinds)
 --------------------------------------------------------------------
 local menuProxy = setmetatable({}, {
@@ -2362,8 +2705,8 @@ local ROW_H = 34
 local PADX = 3
 local MOD_H = ROW_H + PADX * 2
 local TABS = {
-	{name = "Screen", mods = {AspectMod, WatermarkMod, KeybindsMod, CursorMod}},
-	{name = "World", mods = {WeatherMod, SnowMod, SkyMod, ShaderMod, JumpMod}},
+	{name = "Screen", mods = {AspectMod, DbdMod, WatermarkMod, KeybindsMod, CursorMod}},
+	{name = "World", mods = {WeatherMod, SnowMod, SkyMod, ShaderMod, GfxMod, PotatoMod, JumpMod}},
 	{name = "Player", mods = {ChamsMod, HatMod, TrailMod, PetsMod, SkinMod, StreamerMod}},
 	{name = "Settings", mods = {UIMod, WMStyleMod, KBStyleMod}},
 }

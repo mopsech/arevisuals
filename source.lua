@@ -772,15 +772,15 @@ local MAX_ALPHA = 0.35
 
 local JumpMod
 
--- стиль 2 (как в старых майнкрафт-читах): внутренний круг, внешний круг побольше
--- и между ними по кругу пишется AREVISUALS, пока кольцо не заполнится
+-- стиль 2 (как в старых майнкрафт-читах): тонкие внутренний и внешний круги,
+-- между ними по кругу AREVISUALS. Всё появляется сразу (без анимации), в конце плавно гаснет.
 local function createTextRing(position)
 	local COLOR = JumpMod.v.Color
-	local DUR = 2.6
-	local FADE_AT = DUR - 1.1
+	local DUR = 1.8
+	local FADE_AT = DUR - 0.8
 	local FULL = PART_SIZE * 50 -- размер SurfaceGui в пикселях
 	local C = FULL / 2
-	local D_IN, D_OUT = FULL * 0.5, FULL * 0.84
+	local D_IN, D_OUT = FULL * 0.32, FULL * 0.52
 
 	local part = Instance.new("Part")
 	part.Name = "JumpCircleText"
@@ -808,14 +808,10 @@ local function createTextRing(position)
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 	}, sg)
-	local sc = new("UIScale", {Scale = 0.35}, root)
 	part.Parent = workspace
 
-	local fadeIn = TweenInfo.new(0.25, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
-	local fadeOut = TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
-	TweenService:Create(sc, TweenInfo.new(DUR, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 1}):Play()
+	local fadeOut = TweenInfo.new(0.7, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 
-	-- на одно свойство - один твин в момент времени (второй твин запускаем через task.delay)
 	local function ring(diameter, thickness, alpha)
 		local f = new("Frame", {
 			AnchorPoint = Vector2.new(0.5, 0.5),
@@ -825,21 +821,20 @@ local function createTextRing(position)
 			BorderSizePixel = 0,
 		}, root)
 		new("UICorner", {CornerRadius = UDim.new(1, 0)}, f)
-		local st = new("UIStroke", {Color = COLOR, Thickness = thickness, Transparency = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, f)
-		TweenService:Create(st, fadeIn, {Transparency = alpha}):Play()
+		local st = new("UIStroke", {Color = COLOR, Thickness = thickness, Transparency = alpha, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, f)
 		task.delay(FADE_AT, function()
 			TweenService:Create(st, fadeOut, {Transparency = 1}):Play()
 		end)
 	end
-	ring(D_IN, 4, 0.1)
-	ring(D_IN, 14, 0.6)
-	ring(D_OUT, 4, 0.1)
-	ring(D_OUT, 14, 0.6)
+	ring(D_IN, 2, 0.1)
+	ring(D_IN, 7, 0.78)
+	ring(D_OUT, 2, 0.1)
+	ring(D_OUT, 7, 0.78)
 
 	-- текст по кругу между кольцами
 	local word = "AREVISUALS "
 	local rMid = (D_IN + D_OUT) / 4
-	local fontPx = 62
+	local fontPx = 36
 	local slots = math.floor(2 * math.pi * rMid / (fontPx * 0.95))
 	local N = math.max(1, math.floor(slots / #word)) * #word
 	for i = 0, N - 1 do
@@ -856,21 +851,18 @@ local function createTextRing(position)
 				TextSize = fontPx,
 				Font = Enum.Font.Michroma,
 				TextColor3 = COLOR,
-				TextTransparency = 1,
+				TextTransparency = 0.05,
 				TextStrokeColor3 = COLOR,
-				TextStrokeTransparency = 1,
+				TextStrokeTransparency = 0.8,
 				BorderSizePixel = 0,
 			}, root)
-			-- буквы появляются по кругу одна за другой, пока кольцо не заполнится
-			local delay = (i / N) * 1.0
-			TweenService:Create(lbl, TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.Out, 0, false, delay), {TextTransparency = 0.05, TextStrokeTransparency = 0.6}):Play()
 			task.delay(FADE_AT, function()
 				TweenService:Create(lbl, fadeOut, {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
 			end)
 		end
 	end
 
-	Debris:AddItem(part, DUR + 0.3)
+	Debris:AddItem(part, DUR + 0.2)
 end
 
 local function createCircle(position)
@@ -1158,6 +1150,410 @@ player.CharacterAdded:Connect(function()
 	chams.saved = {}
 	chams.hl = nil
 	chamsApply()
+end)
+
+--------------------------------------------------------------------
+-- PLAYER: PETS (питомцы бегут за игроком с задержкой, на месте стоят справа)
+--------------------------------------------------------------------
+local InsertService = game:GetService("InsertService")
+local PET_DEFS = {
+	{key = "Pig", id = 10081806634, height = 1.7},
+	{key = "Tortoise", id = 9408387677, height = 1.1},
+}
+local pets = {list = {}, folder = nil, conn = nil, loading = {}, move = 0, t = 0, dir = Vector3.new(0, 0, -1)}
+local PetsMod
+local petRay = RaycastParams.new()
+petRay.FilterType = Enum.RaycastFilterType.Exclude
+
+local function petPart(model, size, color, cf, shape)
+	local p = Instance.new("Part")
+	p.Size = size
+	p.Color = color
+	p.Material = Enum.Material.SmoothPlastic
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	if shape then
+		p.Shape = shape
+	end
+	p.CFrame = cf
+	p.Parent = model
+	return p
+end
+
+-- запасная модель, если ассет не удалось загрузить из клиента
+local function petFallback(key)
+	local m = Instance.new("Model")
+	m.Name = key
+	if key == "Pig" then
+		local pink, dark = Color3.fromRGB(255, 170, 190), Color3.fromRGB(240, 130, 160)
+		local body = petPart(m, Vector3.new(1.2, 1, 1.8), pink, CFrame.new(0, 0.9, 0))
+		petPart(m, Vector3.new(0.9, 0.85, 0.8), pink, CFrame.new(0, 1.15, -1.2))
+		petPart(m, Vector3.new(0.45, 0.35, 0.25), dark, CFrame.new(0, 1.05, -1.65))
+		for _, sx in ipairs({-0.4, 0.4}) do
+			for _, sz in ipairs({-0.6, 0.6}) do
+				petPart(m, Vector3.new(0.3, 0.5, 0.3), pink, CFrame.new(sx, 0.25, sz))
+			end
+			petPart(m, Vector3.new(0.25, 0.3, 0.1), dark, CFrame.new(sx * 0.8, 1.7, -1.1))
+		end
+		m.PrimaryPart = body
+	else
+		local green, dark = Color3.fromRGB(96, 150, 80), Color3.fromRGB(70, 110, 55)
+		local shell = petPart(m, Vector3.new(1.8, 1, 2), dark, CFrame.new(0, 0.75, 0), Enum.PartType.Ball)
+		petPart(m, Vector3.new(0.5, 0.45, 0.6), green, CFrame.new(0, 0.55, -1.15))
+		for _, sx in ipairs({-0.6, 0.6}) do
+			for _, sz in ipairs({-0.55, 0.55}) do
+				petPart(m, Vector3.new(0.35, 0.3, 0.4), green, CFrame.new(sx, 0.2, sz))
+			end
+		end
+		m.PrimaryPart = shell
+	end
+	return m
+end
+
+local function petLoad(def)
+	local model = Instance.new("Model")
+	model.Name = def.key
+	local loaded = false
+	local ok, res = pcall(function()
+		return InsertService:LoadAsset(def.id)
+	end)
+	if ok and res then
+		for _, c in ipairs(res:GetChildren()) do
+			c.Parent = model
+		end
+		res:Destroy()
+		loaded = true
+	else
+		-- запасной путь (работает не везде)
+		local ok2, objs = pcall(function()
+			return game:GetObjects("rbxassetid://" .. def.id)
+		end)
+		if ok2 and objs then
+			for _, o in ipairs(objs) do
+				o.Parent = model
+			end
+			loaded = true
+		end
+	end
+	local partsCount = 0
+	if loaded then
+		for _, d in ipairs(model:GetDescendants()) do
+			if d:IsA("BaseScript") or d:IsA("Humanoid") or d:IsA("Animator") or d:IsA("Sound") then
+				d:Destroy()
+			elseif d:IsA("BasePart") then
+				d.Anchored = true
+				d.CanCollide = false
+				d.CanQuery = false
+				d.CanTouch = false
+				d.Massless = true
+				partsCount += 1
+			end
+		end
+	end
+	if partsCount == 0 then
+		model:Destroy()
+		model = petFallback(def.key)
+	end
+	return model
+end
+
+local function petRescale(pet)
+	local target = pet.def.height * PetsMod.v.Size
+	pcall(function()
+		pet.model:ScaleTo(target / pet.baseH)
+	end)
+	local cf, sz = pet.model:GetBoundingBox()
+	pet.offset = pet.model:GetPivot():ToObjectSpace(cf)
+	pet.halfH = sz.Y / 2
+end
+
+local function petSpawn(def)
+	if pets.list[def.key] or pets.loading[def.key] then
+		return
+	end
+	pets.loading[def.key] = true
+	task.spawn(function()
+		local model = petLoad(def)
+		pets.loading[def.key] = nil
+		if not PetsMod.enabled or not PetsMod.v[def.key] or pets.list[def.key] or not pets.folder then
+			model:Destroy()
+			return
+		end
+		local pet = {model = model, def = def, pos = nil, y = nil, dir = Vector3.new(0, 0, -1)}
+		local okS, sc = pcall(function()
+			return model:GetScale()
+		end)
+		local _, sz = model:GetBoundingBox()
+		pet.baseH = math.max(sz.Y / ((okS and sc) or 1), 0.1)
+		petRescale(pet)
+		model.Parent = pets.folder
+		pets.list[def.key] = pet
+	end)
+end
+
+local function petSync()
+	if not PetsMod.enabled then
+		return
+	end
+	for _, def in ipairs(PET_DEFS) do
+		if PetsMod.v[def.key] then
+			petSpawn(def)
+		else
+			local pet = pets.list[def.key]
+			if pet then
+				pet.model:Destroy()
+				pets.list[def.key] = nil
+			end
+		end
+	end
+end
+
+local function petStep(dt)
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return
+	end
+	pets.t += dt
+	local vel = root.AssemblyLinearVelocity
+	local flatVel = Vector3.new(vel.X, 0, vel.Z)
+	local moving = flatVel.Magnitude > 2
+	pets.move += ((moving and 1 or 0) - pets.move) * (1 - math.exp(-dt * 3))
+	local lv, rv = root.CFrame.LookVector, root.CFrame.RightVector
+	local look = Vector3.new(lv.X, 0, lv.Z)
+	look = look.Magnitude > 0.01 and look.Unit or Vector3.new(0, 0, -1)
+	local right = Vector3.new(rv.X, 0, rv.Z)
+	right = right.Magnitude > 0.01 and right.Unit or Vector3.new(1, 0, 0)
+	if moving then
+		pets.dir = pets.dir:Lerp(flatVel.Unit, 1 - math.exp(-dt * 6))
+	end
+	local mdir = pets.dir.Magnitude > 0.01 and pets.dir.Unit or look
+	petRay.FilterDescendantsInstances = {char, pets.folder}
+	local rp = root.Position
+	local base = Vector3.new(rp.X, 0, rp.Z)
+	local idx = 0
+	for _, def in ipairs(PET_DEFS) do
+		local pet = pets.list[def.key]
+		if pet then
+			idx += 1
+			-- на месте: справа от игрока; в движении: позади с небольшим разбросом
+			local idle = right * (3 + (idx - 1) * 2.4) - look * 0.6
+			local mv = -mdir * (3.6 + (idx - 1) * 2.6) + right * ((idx % 2 == 0) and 1.3 or -1.3)
+			local target = base + idle:Lerp(mv, pets.move)
+			if not pet.pos or (pet.pos - base).Magnitude > 70 then
+				pet.pos = target
+			end
+			local old = pet.pos
+			pet.pos = old + (target - old) * (1 - math.exp(-dt * (2.2 + pets.move)))
+			local delta = pet.pos - old
+			local walking = delta.Magnitude / math.max(dt, 1e-3) > 0.8
+			local want = walking and delta.Unit or look
+			pet.dir = pet.dir:Lerp(want, 1 - math.exp(-dt * 8))
+			if pet.dir.Magnitude < 0.01 then
+				pet.dir = look
+			end
+			local hit = workspace:Raycast(Vector3.new(pet.pos.X, rp.Y + 3, pet.pos.Z), Vector3.new(0, -40, 0), petRay)
+			local gy = hit and hit.Position.Y or (rp.Y - 3)
+			pet.y = pet.y and (pet.y + (gy - pet.y) * (1 - math.exp(-dt * 12))) or gy
+			local hop = walking and math.abs(math.sin(pets.t * 9 + idx)) * 0.22 or 0
+			local face = CFrame.lookAt(Vector3.zero, pet.dir.Unit) * CFrame.Angles(0, math.rad(PetsMod.v.Rotation), 0)
+			local bb = CFrame.new(pet.pos.X, pet.y + pet.halfH + hop, pet.pos.Z) * face
+			pet.model:PivotTo(bb * pet.offset:Inverse())
+		end
+	end
+end
+
+PetsMod = Module({
+	name = "Pets",
+	key = Enum.KeyCode.O,
+	settings = {
+		{type = "toggle", name = "Pig", default = true},
+		{type = "toggle", name = "Tortoise", default = true},
+		{type = "slider", name = "Size", min = 0.5, max = 2, step = 0.1, default = 1},
+		{type = "slider", name = "Rotation", min = 0, max = 270, step = 90, default = 0},
+	},
+	onToggle = function(on)
+		if pets.conn then
+			pets.conn:Disconnect()
+			pets.conn = nil
+		end
+		if on then
+			pets.folder = new("Folder", {Name = "AreVisualsPets"}, workspace)
+			pets.conn = RunService.RenderStepped:Connect(petStep)
+			petSync()
+		else
+			for key, pet in pairs(pets.list) do
+				pet.model:Destroy()
+				pets.list[key] = nil
+			end
+			if pets.folder then
+				pets.folder:Destroy()
+				pets.folder = nil
+			end
+		end
+	end,
+	onChange = function(name)
+		if not PetsMod.enabled then
+			return
+		end
+		if name == "Size" then
+			for _, pet in pairs(pets.list) do
+				petRescale(pet)
+			end
+		elseif name == "Pig" or name == "Tortoise" then
+			petSync()
+		end
+	end,
+})
+
+--------------------------------------------------------------------
+-- PLAYER: TRAIL (разные стили)
+--------------------------------------------------------------------
+local trail = {objs = {}}
+local TrailMod
+
+local function trailRainbow()
+	local k = {}
+	for i = 0, 6 do
+		table.insert(k, ColorSequenceKeypoint.new(i / 6, Color3.fromHSV(i / 6, 0.85, 1)))
+	end
+	return ColorSequence.new(k)
+end
+
+local function trailColorSeq(style, color)
+	if style == 2 then
+		return trailRainbow()
+	elseif style == 1 then
+		return ColorSequence.new(color, color:Lerp(Color3.new(0, 0, 0), 0.55))
+	end
+	return ColorSequence.new(color)
+end
+
+local function trailClear()
+	for _, o in ipairs(trail.objs) do
+		o:Destroy()
+	end
+	trail.objs = {}
+end
+
+local function trailBuild()
+	trailClear()
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not root then
+		return
+	end
+	local style, color, life = TrailMod.v.Style, TrailMod.v.Color, TrailMod.v.Lifetime
+	local function add(o)
+		table.insert(trail.objs, o)
+		return o
+	end
+	local foot = -(root.Size.Y / 2) - (hum and hum.HipHeight or 2) + 0.15
+
+	if style == 4 then -- Sparkles
+		local at = add(new("Attachment", {Position = Vector3.new(0, foot + 0.4, 0)}, root))
+		add(new("ParticleEmitter", {
+			Rate = 40,
+			Lifetime = NumberRange.new(life * 0.6, life),
+			Speed = NumberRange.new(0.5, 2),
+			SpreadAngle = Vector2.new(180, 180),
+			Drag = 2,
+			Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 0)}),
+			Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1)}),
+			Color = ColorSequence.new(color),
+			LightEmission = 1,
+			LightInfluence = 0,
+			Rotation = NumberRange.new(0, 360),
+			RotSpeed = NumberRange.new(-90, 90),
+		}, at))
+	elseif style == 5 then -- Fire
+		local at = add(new("Attachment", {Position = Vector3.new(0, foot + 0.3, 0)}, root))
+		add(new("ParticleEmitter", {
+			Rate = 70,
+			Lifetime = NumberRange.new(life * 0.4, life * 0.7),
+			Speed = NumberRange.new(1, 3),
+			SpreadAngle = Vector2.new(25, 25),
+			Acceleration = Vector3.new(0, 6, 0),
+			Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 1.1), NumberSequenceKeypoint.new(1, 0)}),
+			Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(1, 1)}),
+			Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 220, 90)),
+				ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 120, 30)),
+				ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 30, 10)),
+			}),
+			LightEmission = 1,
+			LightInfluence = 0,
+			Rotation = NumberRange.new(0, 360),
+		}, at))
+	else -- Ribbon / Rainbow / Ground
+		local a0, a1
+		if style == 3 then
+			a0 = add(new("Attachment", {Position = Vector3.new(-0.7, foot, 0)}, root))
+			a1 = add(new("Attachment", {Position = Vector3.new(0.7, foot, 0)}, root))
+		else
+			a0 = add(new("Attachment", {Position = Vector3.new(0, 1.1, 0)}, root))
+			a1 = add(new("Attachment", {Position = Vector3.new(0, -1.1, 0)}, root))
+		end
+		add(new("Trail", {
+			Attachment0 = a0,
+			Attachment1 = a1,
+			Lifetime = life,
+			MinLength = 0.05,
+			FaceCamera = style ~= 3,
+			LightEmission = style == 2 and 1 or 0.6,
+			LightInfluence = 0,
+			Color = trailColorSeq(style, color),
+			Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.15), NumberSequenceKeypoint.new(1, 1)}),
+			WidthScale = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0.25)}),
+		}, root))
+	end
+end
+
+local function trailRecolor()
+	local style, color = TrailMod.v.Style, TrailMod.v.Color
+	for _, o in ipairs(trail.objs) do
+		if o:IsA("Trail") then
+			o.Color = trailColorSeq(style, color)
+		elseif o:IsA("ParticleEmitter") and style == 4 then
+			o.Color = ColorSequence.new(color)
+		end
+	end
+end
+
+TrailMod = Module({
+	name = "Trail",
+	key = Enum.KeyCode.Y,
+	settings = {
+		{type = "list", name = "Style", options = {"Ribbon", "Rainbow", "Ground", "Sparkles", "Fire"}, default = 1},
+		{type = "color", name = "Color", default = ACCENT},
+		{type = "slider", name = "Lifetime", min = 0.2, max = 3, step = 0.1, default = 1.2},
+	},
+	onToggle = function(on)
+		if on then
+			trailBuild()
+		else
+			trailClear()
+		end
+	end,
+	onChange = function(name)
+		if not TrailMod.enabled then
+			return
+		end
+		if name == "Color" then
+			trailRecolor()
+		else
+			trailBuild()
+		end
+	end,
+})
+player.CharacterAdded:Connect(function()
+	if TrailMod.enabled then
+		task.wait(1)
+		trailBuild()
+	end
 end)
 
 --------------------------------------------------------------------
@@ -1968,7 +2364,7 @@ local MOD_H = ROW_H + PADX * 2
 local TABS = {
 	{name = "Screen", mods = {AspectMod, WatermarkMod, KeybindsMod, CursorMod}},
 	{name = "World", mods = {WeatherMod, SnowMod, SkyMod, ShaderMod, JumpMod}},
-	{name = "Player", mods = {ChamsMod, HatMod, SkinMod, StreamerMod}},
+	{name = "Player", mods = {ChamsMod, HatMod, TrailMod, PetsMod, SkinMod, StreamerMod}},
 	{name = "Settings", mods = {UIMod, WMStyleMod, KBStyleMod}},
 }
 
@@ -1989,47 +2385,6 @@ local function updateScale()
 end
 updateScale()
 gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateScale)
-
---------------------------------------------------------------------
--- INTRO (заглавный текст при открытии меню)
---------------------------------------------------------------------
-local intro = {
-	group = new("CanvasGroup", {
-		Name = "Intro",
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(560, 140),
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		GroupTransparency = 1,
-		Visible = false,
-	}, holder),
-	t = 0,
-	target = 0,
-	hold = 0,
-}
-
-local introTitle = text(intro.group, "AreVisuals", 46, {
-	Size = UDim2.new(1, 0, 0, 64),
-	Position = UDim2.fromOffset(0, 0),
-	FontFace = FONT_BOLD,
-	TextXAlignment = Enum.TextXAlignment.Center,
-	TextColor3 = WHITE,
-	TextTransparency = 1,
-})
-
-local introSub = text(intro.group, "Made by @ScriptsAgent", 18, {
-	Size = UDim2.new(1, 0, 0, 28),
-	Position = UDim2.fromOffset(0, 72),
-	FontFace = FONT_REG,
-	TextXAlignment = Enum.TextXAlignment.Center,
-	TextColor3 = ACCENT,
-	TextTransparency = 1,
-})
-
-onAccent(function()
-	introSub.TextColor3 = ACCENT
-end)
 
 --------------------------------------------------------------------
 -- МЕНЮ: ЭЛЕМЕНТЫ НАСТРОЕК
@@ -2491,6 +2846,10 @@ local function buildModule(body, mod, order, ctx)
 		end
 	end
 
+	function mod.getH()
+		return open and openH or MOD_H
+	end
+
 	nameBtn.MouseButton1Click:Connect(function()
 		if mod.noToggle then
 			toggleOpen()
@@ -2578,7 +2937,7 @@ for idx, tab in ipairs(TABS) do
 		body.ScrollBarImageColor3 = ACCENT
 	end)
 
-	local p = {frame = frame, body = body, mods = tab.mods, tx = dx, ty = 50, cx = dx, cy = 50, appear = 1, target = 0, wait = (idx - 1) * 0.07, col = 0, collapsed = false}
+	local p = {name = tab.name, dim = 0, frame = frame, body = body, mods = tab.mods, tx = dx, ty = 50, cx = dx, cy = 50, appear = 1, target = 0, wait = (idx - 1) * 0.07, col = 0, collapsed = false}
 	table.insert(panels, p)
 
 	if #tab.mods == 0 then
@@ -2612,6 +2971,68 @@ for idx, tab in ipairs(TABS) do
 	end)
 end
 
+--------------------------------------------------------------------
+-- МЕНЮ: ПОИСК (внизу)
+--------------------------------------------------------------------
+local searchBar = new("CanvasGroup", {
+	Name = "Search",
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, -12),
+	Size = UDim2.fromOffset(250, 36),
+	BackgroundColor3 = DARK,
+	BackgroundTransparency = 0.38,
+	BorderSizePixel = 0,
+	GroupTransparency = 1,
+}, holder)
+corner(searchBar, 12)
+new("UIGradient", {Rotation = 60, Transparency = NumberSequence.new(0, 0.3)}, searchBar)
+local searchBox = new("TextBox", {
+	Size = UDim2.new(1, -24, 1, 0),
+	Position = UDim2.fromOffset(12, 0),
+	BackgroundTransparency = 1,
+	Text = "",
+	PlaceholderText = "Search",
+	PlaceholderColor3 = Color3.fromRGB(150, 158, 162),
+	TextColor3 = WHITE,
+	TextSize = 13,
+	FontFace = FONT_REG,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	ClearTextOnFocus = false,
+	BorderSizePixel = 0,
+}, searchBar)
+
+local function applySearch(q)
+	q = (q or ""):lower():match("^%s*(.-)%s*$")
+	for _, p in ipairs(panels) do
+		local tabHit = q ~= "" and p.name:lower():find(q, 1, true) ~= nil
+		local any = false
+		for _, m in ipairs(p.mods) do
+			local match = q == "" or tabHit or m.name:lower():find(q, 1, true) ~= nil
+			if match then
+				any = true
+			end
+			if match == (m.hidden == true) then -- состояние поменялось
+				m.hidden = not match
+				if match then
+					m.holder.Visible = true
+					tw(m.holder, 0.38, {Size = UDim2.new(1, 0, 0, m.getH())})
+				else
+					local t = tw(m.holder, 0.3, {Size = UDim2.new(1, 0, 0, 0)})
+					t.Completed:Connect(function(state)
+						if state == Enum.PlaybackState.Completed and m.hidden then
+							m.holder.Visible = false
+						end
+					end)
+				end
+			end
+		end
+		p.searchEmpty = q ~= "" and not any
+	end
+end
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+	applySearch(searchBox.Text)
+end)
+
 -- плавное движение / авто-высота панелей
 RunService.RenderStepped:Connect(function(dt)
 	local follow = 1 - math.exp(-dt * 16)
@@ -2627,29 +3048,36 @@ RunService.RenderStepped:Connect(function(dt)
 		p.cx += (p.tx - p.cx) * follow
 		p.cy += (p.ty - p.cy) * follow
 
-		local content = 0
+		local content, visN = 0, 0
 		for _, m in ipairs(p.mods) do
-			content += m.holder.Size.Y.Offset
+			if m.holder.Visible then
+				content += m.holder.Size.Y.Offset
+				visN += 1
+			end
 		end
-		content += math.max(#p.mods - 1, 0) * 2
-		if #p.mods == 0 then
+		content += math.max(visN - 1, 0) * 2
+		if visN == 0 then
 			content = 30
 		end
-		local avail = math.max(90, holderH - p.cy - HEADER - 24)
+		local avail = math.max(90, holderH - p.cy - HEADER - 66)
 		local bodyH = math.min(content, avail)
-		p.col += ((p.collapsed and 1 or 0) - p.col) * (1 - math.exp(-dt * 12))
+		p.col += (((p.collapsed or p.searchEmpty) and 1 or 0) - p.col) * (1 - math.exp(-dt * 12))
 		local openK = 1 - p.col
 		p.body.Size = UDim2.new(1, -12, 0, bodyH * openK)
 		p.body.CanvasSize = UDim2.fromOffset(0, content)
 		p.body.Visible = openK > 0.03
 		p.frame.Size = UDim2.fromOffset(PW, HEADER + (6 + bodyH + 10) * openK)
 
-		p.frame.GroupTransparency = math.clamp(p.appear, 0, 1)
+		p.dim += ((p.searchEmpty and 0.62 or 0) - p.dim) * (1 - math.exp(-dt * 10))
+		p.frame.GroupTransparency = math.clamp(math.max(p.appear, p.dim), 0, 1)
 		p.frame.Position = UDim2.new(0.5, p.cx, 0, p.cy + p.appear * 26)
 		if p.appear < 0.98 then
 			allHidden = false
 		end
 	end
+	local ap = panels[1] and panels[1].appear or 1
+	searchBar.GroupTransparency = math.clamp(ap, 0, 1)
+	searchBar.Position = UDim2.new(0.5, 0, 1, -12 + ap * 20)
 	if not menuOpen and allHidden then
 		holder.Visible = false
 	end
@@ -2703,7 +3131,46 @@ end
 menuBtn.MouseButton1Click:Connect(function()
 	setMenu(not menuOpen)
 end)
-setMenu(true)
+
+-- заставка при запуске: по центру плавно появляется AreVisuals / Made by @ScriptsAgent, затем открывается меню
+setMenu(false)
+do
+	local introGui = new("ScreenGui", {Name = "AreVisualsIntro", IgnoreGuiInset = true, ResetOnSpawn = false, DisplayOrder = 20, ZIndexBehavior = Enum.ZIndexBehavior.Sibling}, playerGui)
+	local intro = new("CanvasGroup", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(520, 120),
+		BackgroundTransparency = 1,
+		GroupTransparency = 1,
+	}, introGui)
+	local introScale = new("UIScale", {Scale = 0.9}, intro)
+	text(intro, 'Are<font color="' .. rgbStr(ACCENT) .. '">Visuals</font>', 56, {
+		Size = UDim2.new(1, 0, 0, 66),
+		Position = UDim2.fromOffset(0, 6),
+		RichText = true,
+		FontFace = FONT_BOLD,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		TextColor3 = WHITE,
+	})
+	text(intro, "Made by @ScriptsAgent", 18, {
+		Size = UDim2.new(1, 0, 0, 26),
+		Position = UDim2.fromOffset(0, 78),
+		TextXAlignment = Enum.TextXAlignment.Center,
+		TextColor3 = Color3.fromRGB(200, 208, 212),
+	})
+	tw(intro, 0.9, {GroupTransparency = 0})
+	tw(introScale, 1.3, {Scale = 1})
+	task.delay(2.1, function()
+		setMenu(true)
+	end)
+	task.delay(2.4, function()
+		tw(intro, 0.8, {GroupTransparency = 1})
+		tw(introScale, 0.8, {Scale = 1.06})
+	end)
+	task.delay(3.5, function()
+		introGui:Destroy()
+	end)
+end
 
 --------------------------------------------------------------------
 -- КЛАВИШИ
@@ -2741,87 +3208,3 @@ UIS.InputBegan:Connect(function(input, gpe)
 end)
 
 refreshKeybinds()
-
---------------------------------------------------------------------
--- INTRO (заглавный текст при инжекте) — играет ОДИН раз
---------------------------------------------------------------------
-local intro = {
-	group = new("CanvasGroup", {
-		Name = "Intro",
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.58), -- чуть ниже центра
-		Size = UDim2.fromOffset(560, 140),
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		GroupTransparency = 1,
-		Visible = false,
-		ZIndex = 100,
-	}, holder),
-	t = 0,
-	target = 0,
-}
-
-local introTitle = text(intro.group, "AreVisuals", 46, {
-	Size = UDim2.new(1, 0, 0, 64),
-	Position = UDim2.fromOffset(0, 0),
-	FontFace = FONT_BOLD,
-	TextXAlignment = Enum.TextXAlignment.Center,
-	TextColor3 = WHITE,
-	TextTransparency = 1,
-	ZIndex = 101,
-})
-
-local introSub = text(intro.group, "Made by @ScriptsAgent", 18, {
-	Size = UDim2.new(1, 0, 0, 28),
-	Position = UDim2.fromOffset(0, 72),
-	FontFace = FONT_REG,
-	TextXAlignment = Enum.TextXAlignment.Center,
-	TextColor3 = ACCENT,
-	TextTransparency = 1,
-	ZIndex = 101,
-})
-
-onAccent(function()
-	introSub.TextColor3 = ACCENT
-end)
-
--- анимация intro
-RunService.RenderStepped:Connect(function(dt)
-	if intro.t ~= intro.target then
-		intro.t += (intro.target - intro.t) * (1 - math.exp(-dt * 7))
-		if math.abs(intro.t - intro.target) < 0.005 then
-			intro.t = intro.target
-		end
-	end
-	local ia = intro.t
-	intro.group.Visible = ia > 0.001
-	intro.group.GroupTransparency = 1 - ia
-	introTitle.Position = UDim2.fromOffset(0, (1 - ia) * 26)
-	introSub.Position   = UDim2.fromOffset(0, 72 + (1 - ia) * 26)
-	introTitle.TextTransparency = 1 - ia
-	introSub.TextTransparency   = 1 - ia * 0.9
-end)
-
--- ПРОИГРЫВАЕМ ОДИН РАЗ ПРИ ИНЖЕКТЕ (через delay, чтобы всё точно инициализировалось)
-task.delay(0.15, function()
-	-- гарантируем видимость
-	holder.Visible = true
-
-	blur.Size = 0
-	tw(blur, 0.25, {Size = math.min(BLUR_SIZE * 1.8, 34)}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-
-	intro.t = 0
-	intro.target = 1
-
-	-- держим дольше
-	task.wait(2.4)
-
-	intro.target = 0
-	task.wait(0.45)
-
-	if menuOpen then
-		tw(blur, 0.55, {Size = BLUR_SIZE}, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
-	else
-		tw(blur, 0.5, {Size = 0}, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
-	end
-end)
